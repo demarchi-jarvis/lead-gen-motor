@@ -1,0 +1,70 @@
+# ============================================================
+# Lead Gen Motor — Configuração de Limites e Segurança
+# Arquivo: config/limits.yaml
+#
+# ATENÇÃO: Estes limites existem para proteger suas contas
+# nas plataformas. Aumentar demais pode resultar em:
+#   - Banimento da conta no LinkedIn/Instagram
+#   - Bloqueio no WhatsApp Business
+#   - Classificação como SPAM no SES
+#
+# Recomendação: comece conservador e aumente gradualmente
+# ============================================================
+
+limites:
+  email:
+    por_hora: 50          # Limite diário SES sandbox = 200, produção = 50000
+    por_dia: 200
+    burst_max: 5          # Máximo de envios simultâneos
+    intervalo_min_segundos: 60
+
+  whatsapp:
+    por_hora: 10          # Meta permite 1000/dia em contas verificadas
+    por_dia: 50           # Conservador para contas novas
+    burst_max: 2
+    intervalo_min_segundos: 300  # 5 minutos entre mensagens para o mesmo número
+
+  linkedin:
+    por_hora: 5           # LinkedIn detecta automação acima de 20-30/dia
+    por_dia: 20           # Máximo seguro para evitar restrição
+    burst_max: 1          # Nunca enviar mais de 1 por vez
+    intervalo_min_segundos: 600  # 10 minutos entre conexões/mensagens
+
+  instagram:
+    por_hora: 5
+    por_dia: 20
+    burst_max: 1
+    intervalo_min_segundos: 600
+
+  facebook:
+    por_hora: 5
+    por_dia: 20
+    burst_max: 1
+    intervalo_min_segundos: 600
+
+  sms:
+    por_hora: 20
+    por_dia: 100
+    burst_max: 3
+    intervalo_min_segundos: 180
+
+# ============================================================
+# Configuração dos Workers (Dispatcher/Worker Pattern)
+# ============================================================
+
+workers:
+  quantidade: 5                    # Goroutines processando jobs em paralelo
+  tamanho_fila: 100                # Buffer do channel (jobs em memória)
+  intervalo_despacho_segundos: 30  # Frequência de busca no banco
+  max_jobs_por_despacho: 50        # Máximo de jobs por ciclo
+
+# ============================================================
+# Algoritmo de Pontuação (Lead Scoring)
+# ============================================================
+
+pontuacao:
+  threshold_lead_quente: 60         # Score mínimo para notificar o closer
+  pontos_resposta: 30               # Lead respondeu alguma mensagem
+  pontos_clique: 20                 # Lead clicou em link rastreável
+  pontos_interacao_adicional: 10    # Cada interação extra além da primeira
+  pontos_campo_preenchido: 5        # Por campo de perfil preenchido

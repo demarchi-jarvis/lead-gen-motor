@@ -1,0 +1,179 @@
+version: "3.9"
+
+# ============================================================
+# Lead Gen Motor — Docker Compose
+# Serviços: app Go + PostgreSQL + Chrome Headless
+#
+# Uso desenvolvimento: docker-compose up -d
+# Uso produção EC2:    docker-compose -f docker-compose.yml up -d
+# ============================================================
+
+networks:
+  lead-gen-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/lead-gen-motor/data/postgres
+      o: bind
+  postgres_backups:
+    driver: local
+
+services:
+
+  # ============================================================
+  # PostgreSQL — Banco de Dados Principal
+  # Alpine: imagem mínima ~30MB comprimida
+  # ============================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: lead-gen-postgres
+    restart: unless-stopped
+    networks:
+      - lead-gen-net
+    environment:
+      POSTGRES_DB:       ${DB_NOME:-leadgen}
+      POSTGRES_USER:     ${DB_USUARIO:-leadgen}
+      POSTGRES_PASSWORD: ${DB_SENHA:?DB_SENHA é obrigatória}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+      TZ:                America/Sao_Paulo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d:ro  # executa migrations na 1ª vez
+    ports:
+      - "127.0.0.1:5432:5432"  # somente localhost — não expõe para fora
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USUARIO:-leadgen} -d ${DB_NOME:-leadgen}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: >
+      postgres
+        -c max_connections=50
+        -c shared_buffers=128MB
+        -c effective_cache_size=256MB
+        -c maintenance_work_mem=32MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=4MB
+        -c log_min_duration_statement=1000
+        -c log_connections=on
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ============================================================
+  # Chrome Headless — Para automação social via chromedp
+  # Imagem oficial chromedp com DevTools Protocol habilitado
+  # ============================================================
+  chromedp:
+    image: chromedp/headless-shell:latest
+    container_name: lead-gen-chrome
+    restart: unless-stopped
+    networks:
+      - lead-gen-net
+    # Expõe somente internamente — nunca para a internet
+    ports:
+      - "127.0.0.1:9222:9222"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN   # necessário para Chrome sandbox
+    environment:
+      TZ: America/Sao_Paulo
+    # Limita recursos: Chrome headless não precisa de muito para automação básica
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9222/json/version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================
+  # Aplicação Go — Lead Gen Motor
+  # Binário estático em scratch — imagem final ~20-25MB
+  # ============================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: final
+    image: lead-gen-motor:latest
+    container_name: lead-gen-app
+    restart: unless-stopped
+    networks:
+      - lead-gen-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromedp:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:${APP_PORTA:-8080}:8080"  # exposto para internet (via SG na EC2)
+    env_file:
+      - .env
+    environment:
+      # Sobrescreve hosts para uso interno Docker
+      DB_HOST:    postgres
+      DB_PORTA:   "5432"
+      CHROME_URL: "ws://chromedp:9222"
+      TZ:         America/Sao_Paulo
+    volumes:
+      - ./config/limits.yaml:/app/config/limits.yaml:ro
+      - /var/log/lead-gen:/var/log/lead-gen
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M  # Go é eficiente — 256MB é generoso para este workload
+          cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "service=lead-gen-app"
+
+  # ============================================================
+  # pgAdmin (opcional — apenas desenvolvimento)
+  # Comente ou remova em produção para economizar recursos
+  # ============================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: lead-gen-pgadmin
+    restart: unless-stopped
+    profiles:
+      - dev   # Só sobe com: docker-compose --profile dev up
+    networks:
+      - lead-gen-net
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    admin@leadgen.local
+      PGADMIN_DEFAULT_PASSWORD: ${DB_SENHA:-leadgen_admin}
+      PGADMIN_LISTEN_PORT:      5050
+    ports:
+      - "127.0.0.1:5050:5050"
+    volumes:
+      - /tmp/pgadmin:/var/lib/pgadmin
+    deploy:
+      resources:
+        limits:
+          memory: 256M
