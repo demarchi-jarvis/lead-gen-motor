@@ -1,6 +1,6 @@
 # ============================================================
-# VPC Principal — Single VPC, low cost, sem NAT Gateway
-# NAT Gateway custaria ~$32/mês sozinho — evitado com subnet pública
+# VPC Principal - Single VPC, low cost, sem NAT Gateway
+# NAT Gateway custaria ~$32/mes sozinho - evitado com subnet pública
 # ============================================================
 
 resource "aws_vpc" "principal" {
@@ -12,7 +12,7 @@ resource "aws_vpc" "principal" {
 }
 
 # ============================================================
-# Subnet Pública — instância recebe IP público diretamente
+# Subnet Pública - instância recebe IP público diretamente
 # ============================================================
 
 resource "aws_subnet" "publica" {
@@ -50,17 +50,17 @@ resource "aws_route_table_association" "publica" {
 }
 
 # ============================================================
-# Security Group — Princípio do Menor Privilégio
-# Apenas: SSH (IP restrito), App Port, HTTPS saída
+# Security Group - Principio do Menor Privilegio
+# Apenas: SSH (IP restrito), App Port, HTTPS saida
 # ============================================================
 
 resource "aws_security_group" "lead_gen" {
   name        = "lead-gen-sg"
-  description = "Lead Gen Motor — acesso mínimo necessário"
+  description = "Lead Gen Motor - acesso minimo necessario"
   vpc_id      = aws_vpc.principal.id
 
   ingress {
-    description = "SSH — somente IP autorizado"
+    description = "SSH - somente IP autorizado"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -68,7 +68,7 @@ resource "aws_security_group" "lead_gen" {
   }
 
   ingress {
-    description = "API Go — porta da aplicação"
+    description = "API Go - porta da aplicacao"
     from_port   = var.app_porta
     to_port     = var.app_porta
     protocol    = "tcp"
@@ -77,7 +77,7 @@ resource "aws_security_group" "lead_gen" {
 
   # Necessário para: SES SMTP, APIs WhatsApp, LinkedIn, Instagram
   egress {
-    description = "Saída HTTPS — APIs externas"
+    description = "Saida HTTPS - APIs externas"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -85,7 +85,7 @@ resource "aws_security_group" "lead_gen" {
   }
 
   egress {
-    description = "Saída HTTP — atualizações, yum"
+    description = "Saida HTTP - atualizacoes, yum"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -94,14 +94,14 @@ resource "aws_security_group" "lead_gen" {
 
   # SMTP SES (porta 587 com STARTTLS)
   egress {
-    description = "SMTP SES — envio de email"
+    description = "SMTP SES - envio de email"
     from_port   = 587
     to_port     = 587
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Comunicação interna Docker (containers se comunicam pela rede interna)
+  # Comunicacao interna Docker (containers se comunicam pela rede interna)
   egress {
     description = "PostgreSQL interno Docker"
     from_port   = 5432

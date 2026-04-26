@@ -1,3 +1,4 @@
+/*
 # ============================================================
 # IAM Role EC2 — Permissões mínimas necessárias
 # AWS Academy tem restrições: não cria roles com nomes arbitrários
@@ -115,3 +116,4 @@ resource "aws_iam_instance_profile" "ec2_lead_gen" {
 
   tags = { Name = "lead-gen-instance-profile" }
 }
+*/

@@ -1,0 +1,10 @@
+# Terraform
+.terraform/
+terraform.tfstate*
+tfplan
+lead-gen-key
+lead-gen-key.pub
+
+# AWS CLI artifacts
+aws/
+awscliv2.zip

@@ -568,6 +568,9 @@ func (r *LeadRepository) scanLead(row *sql.Row) (*domain.Lead, error) {
 	lead.Website = website.String
 	lead.Localizacao = localizacao.String
 	lead.Notas = notas.String
+	if tags.Valid {
+		lead.Tags = parsePostgresTextArray(tags.String)
+	}
 	if canalPreferido.Valid {
 		lead.CanalPreferido = domain.Canal(canalPreferido.String)
 	}
@@ -605,6 +608,9 @@ func (r *LeadRepository) scanLeadRow(rows *sql.Rows) (*domain.Lead, error) {
 	lead.Website = website.String
 	lead.Localizacao = localizacao.String
 	lead.Notas = notas.String
+	if tags.Valid {
+		lead.Tags = parsePostgresTextArray(tags.String)
+	}
 	if canalPreferido.Valid {
 		lead.CanalPreferido = domain.Canal(canalPreferido.String)
 	}
@@ -636,6 +642,9 @@ func (r *CampanhaRepository) scanCampanha(row *sql.Row) (*domain.Campanha, error
 	}
 	c.Descricao = descricao.String
 	c.TemplateAssunto = assunto.String
+	if canaisStr.Valid {
+		c.Canais = parsePostgresArray(canaisStr.String)
+	}
 	if iniciadoEm.Valid {
 		t := iniciadoEm.Time
 		c.IniciadoEm = &t
@@ -665,6 +674,9 @@ func (r *CampanhaRepository) scanCampanhaRow(rows *sql.Rows) (*domain.Campanha, 
 	}
 	c.Descricao = descricao.String
 	c.TemplateAssunto = assunto.String
+	if canaisStr.Valid {
+		c.Canais = parsePostgresArray(canaisStr.String)
+	}
 	if iniciadoEm.Valid {
 		t := iniciadoEm.Time
 		c.IniciadoEm = &t
@@ -684,13 +696,79 @@ func toNullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
-func nullToStr(dest *string) *sql.NullString {
-	return &sql.NullString{}
+// strScanner implementa sql.Scanner escrevendo o valor lido em *dest.
+// Substitui o padrão sql.NullString para campos opcionais no Scan.
+type strScanner struct{ dest *string }
+
+func (s *strScanner) Scan(src any) error {
+	if src == nil {
+		*s.dest = ""
+		return nil
+	}
+	switch v := src.(type) {
+	case string:
+		*s.dest = v
+	case []byte:
+		*s.dest = string(v)
+	default:
+		*s.dest = fmt.Sprintf("%v", v)
+	}
+	return nil
 }
 
+// nullToStr retorna um sql.Scanner que popula *dest com o valor lido do banco.
+func nullToStr(dest *string) sql.Scanner {
+	return &strScanner{dest: dest}
+}
+
+// parsePostgresArray converte o formato de array do PostgreSQL ({val1,val2}) para []domain.Canal.
+func parsePostgresArray(s string) []domain.Canal {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	canais := make([]domain.Canal, 0, len(parts))
+	for _, p := range parts {
+		p = strings.Trim(strings.TrimSpace(p), `"`)
+		if p != "" {
+			canais = append(canais, domain.Canal(p))
+		}
+	}
+	return canais
+}
+
+// parsePostgresTextArray converte o formato de array do PostgreSQL ({val1,val2}) para []string.
+func parsePostgresTextArray(s string) []string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	if s == "" {
+		return []string{}
+	}
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.Trim(strings.TrimSpace(p), `"`)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// pqArray converte []string para o formato de array do PostgreSQL com escape correto.
 func pqArray(ss []string) string {
 	if len(ss) == 0 {
 		return "{}"
 	}
-	return "{" + strings.Join(ss, ",") + "}"
+	parts := make([]string, len(ss))
+	for i, s := range ss {
+		s = strings.ReplaceAll(s, `\`, `\\`)
+		s = strings.ReplaceAll(s, `"`, `\"`)
+		parts[i] = `"` + s + `"`
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }

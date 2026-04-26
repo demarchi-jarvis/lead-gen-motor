@@ -337,9 +337,23 @@ func (a *AdaptadorSocial) enviarInstagram(ctx context.Context, msg ports.Mensage
 		corpo = corpo[:997] + "..."
 	}
 
-	// Clica em "Message" → abre DM
+	// Clica em "Message" via JavaScript (seletor :has-text() não é CSS padrão)
 	erroAutomacao = chromedp.Run(chromeCtx,
-		chromedp.Click(`div[role="button"]:has-text("Message")`, chromedp.ByQuery),
+		chromedp.ActionFunc(func(evalCtx context.Context) error {
+			var clicou bool
+			return chromedp.Evaluate(`
+				(() => {
+					const candidates = document.querySelectorAll('div[role="button"], button');
+					for (const el of candidates) {
+						if (el.innerText && el.innerText.trim() === 'Message') {
+							el.click();
+							return true;
+						}
+					}
+					return false;
+				})()
+			`, &clicou).Do(evalCtx)
+		}),
 		chromedp.WaitVisible(`div[aria-label="Message"]`, chromedp.ByQuery),
 		chromedp.SendKeys(`div[aria-label="Message"]`, corpo, chromedp.ByQuery),
 		chromedp.Submit(`div[aria-label="Message"]`, chromedp.ByQuery),

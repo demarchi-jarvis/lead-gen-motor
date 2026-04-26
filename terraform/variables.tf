@@ -70,8 +70,8 @@ variable "cloudwatch_retencao_dias" {
 }
 
 variable "db_senha" {
-  description = "Senha do PostgreSQL (use variável de ambiente: TF_VAR_db_senha)"
+  description = "Senha do PostgreSQL — OBRIGATÓRIO: export TF_VAR_db_senha='SuaSenhaForte'"
   type        = string
   sensitive   = true
-  default     = "lead_gen_s3cur3_2024"
+  # sem default — força definição explícita via TF_VAR_db_senha ou tfvars
 }

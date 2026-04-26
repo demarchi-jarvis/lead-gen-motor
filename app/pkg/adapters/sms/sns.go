@@ -6,10 +6,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
+	snstypes "github.com/aws/aws-sdk-go-v2/service/sns/types"
 
 	"github.com/demarchi/lead-gen-motor/pkg/domain"
 	"github.com/demarchi/lead-gen-motor/pkg/ports"
@@ -59,9 +62,33 @@ func (a *AdaptadorSNS) Disponivel() bool {
 	return a.cfg.NumeroDestino != ""
 }
 
+// normalizarTelefoneE164 converte número brasileiro para formato E.164 (+55XXXXXXXXXXX).
+func normalizarTelefoneE164(telefone string) string {
+	digitos := strings.Map(func(r rune) rune {
+		if unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, telefone)
+
+	if strings.HasPrefix(telefone, "+") {
+		return "+" + digitos
+	}
+	if strings.HasPrefix(digitos, "55") && len(digitos) >= 12 {
+		return "+" + digitos
+	}
+	if len(digitos) == 11 || len(digitos) == 10 {
+		return "+55" + digitos
+	}
+	if len(digitos) >= 12 {
+		return "+" + digitos
+	}
+	return telefone
+}
+
 // Enviar envia SMS para o lead via SNS (usado para leads quentes diretos).
 func (a *AdaptadorSNS) Enviar(ctx context.Context, msg ports.MensagemEnvio) ports.ResultadoEnvio {
-	telefone := msg.Lead.Telefone
+	telefone := normalizarTelefoneE164(msg.Lead.Telefone)
 	if telefone == "" {
 		return ports.ResultadoEnvio{
 			Sucesso:      false,
@@ -75,19 +102,19 @@ func (a *AdaptadorSNS) Enviar(ctx context.Context, msg ports.MensagemEnvio) port
 		corpo = corpo[:157] + "..."
 	}
 
-	attrs := map[string]sns.MessageAttributeValue{}
+	attrs := map[string]snstypes.MessageAttributeValue{}
 	if a.cfg.NomeRemetente != "" {
 		nome := a.cfg.NomeRemetente
 		if len(nome) > 11 {
 			nome = nome[:11]
 		}
-		attrs["AWS.SNS.SMS.SenderID"] = sns.MessageAttributeValue{
+		attrs["AWS.SNS.SMS.SenderID"] = snstypes.MessageAttributeValue{
 			DataType:    aws.String("String"),
 			StringValue: aws.String(nome),
 		}
 	}
 	// Transacional = entrega garantida (mais caro que Promotional)
-	attrs["AWS.SNS.SMS.SMSType"] = sns.MessageAttributeValue{
+	attrs["AWS.SNS.SMS.SMSType"] = snstypes.MessageAttributeValue{
 		DataType:    aws.String("String"),
 		StringValue: aws.String("Transactional"),
 	}
@@ -147,7 +174,7 @@ func (a *AdaptadorSNS) NotificarLeadQuente(ctx context.Context, lead *domain.Lea
 		mensagem = mensagem[:477] + "..."
 	}
 
-	attrs := map[string]sns.MessageAttributeValue{
+	attrs := map[string]snstypes.MessageAttributeValue{
 		"AWS.SNS.SMS.SMSType": {
 			DataType:    aws.String("String"),
 			StringValue: aws.String("Transactional"),

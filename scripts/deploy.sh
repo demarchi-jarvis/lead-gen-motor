@@ -1,18 +1,21 @@
 #!/bin/bash
 # ============================================================
-# deploy.sh — Sobe toda a infraestrutura e aplicação
+# deploy.sh — Lead Gen Motor: deploy completo na AWS Academy
 #
 # O QUE FAZ:
-#   1. Gera par de chaves SSH (se não existir)
-#   2. Terraform init + plan + apply (EC2 Spot + VPC)
-#   3. Aguarda instância ficar pronta
-#   4. Copia arquivos da aplicação via SCP
-#   5. Inicia a aplicação via Docker Compose
+#   1. Verifica pré-requisitos e credenciais AWS
+#   2. Garante par de chaves SSH (gera se não existir)
+#   3. Remove key pair conflitante no AWS (evita erro de recriação)
+#   4. Terraform init + plan + apply (EC2 On-Demand + VPC)
+#   5. Aguarda instância + Docker ficarem prontos (userdata)
+#   6. Copia código fonte + app completo para EC2 via rsync/scp
+#   7. Builda imagem Docker na EC2 e inicia os containers
 #
 # USO:
 #   chmod +x scripts/deploy.sh
-#   ./scripts/deploy.sh
-#   ./scripts/deploy.sh --auto-approve   # pula confirmação do terraform
+#   ./scripts/deploy.sh                  # deploy com confirmação
+#   ./scripts/deploy.sh --auto-approve   # pula confirmação terraform
+#   ./scripts/deploy.sh --rebuild        # força rebuild da imagem Go
 # ============================================================
 set -euo pipefail
 
@@ -21,209 +24,316 @@ RAIZ="$(cd "$SCRIPT_DIR/.." && pwd)"
 TF_DIR="$RAIZ/terraform"
 APP_DIR="$RAIZ/app"
 
-# Cores para output
 VERDE='\033[0;32m'
 AMARELO='\033[1;33m'
 VERMELHO='\033[0;31m'
 AZUL='\033[0;34m'
 RESET='\033[0m'
 
-log_info()    { echo -e "${AZUL}[INFO]${RESET} $*"; }
-log_sucesso() { echo -e "${VERDE}[OK]${RESET} $*"; }
-log_aviso()   { echo -e "${AMARELO}[AVISO]${RESET} $*"; }
-log_erro()    { echo -e "${VERMELHO}[ERRO]${RESET} $*" >&2; }
+ok()   { echo -e "${VERDE}[OK]${RESET} $*"; }
+info() { echo -e "${AZUL}[INFO]${RESET} $*"; }
+warn() { echo -e "${AMARELO}[AVISO]${RESET} $*"; }
+erro() { echo -e "${VERMELHO}[ERRO]${RESET} $*" >&2; }
+sep()  { echo -e "${AZUL}────────────────────────────────────────────${RESET}"; }
 
 AUTO_APPROVE=""
-if [[ "${1:-}" == "--auto-approve" ]]; then
-  AUTO_APPROVE="-auto-approve"
-fi
+REBUILD=""
+for arg in "${@:-}"; do
+  [[ "$arg" == "--auto-approve" ]] && AUTO_APPROVE="-auto-approve"
+  [[ "$arg" == "--rebuild" ]]      && REBUILD="--build"
+done
+
+echo ""
+echo -e "${AZUL}============================================================${RESET}"
+echo -e "${AZUL}   Lead Gen Motor — Deploy AWS Academy${RESET}"
+echo -e "${AZUL}============================================================${RESET}"
+echo ""
 
 # ============================================================
 # 1. Pré-requisitos
 # ============================================================
-log_info "Verificando pré-requisitos..."
+sep
+info "Verificando pré-requisitos..."
 
-for cmd in terraform aws docker ssh scp; do
-  if ! command -v "$cmd" &> /dev/null; then
-    log_erro "Comando '$cmd' não encontrado. Instale e tente novamente."
+for cmd in terraform aws ssh scp; do
+  if ! command -v "$cmd" &>/dev/null; then
+    erro "Comando '$cmd' não encontrado."
     exit 1
   fi
 done
 
 # Verifica credenciais AWS
 if ! aws sts get-caller-identity &>/dev/null; then
-  log_erro "Credenciais AWS não configuradas ou expiradas."
-  log_erro "No AWS Academy: copie as credenciais do 'AWS Details' e exporte:"
-  log_erro "  export AWS_ACCESS_KEY_ID=..."
-  log_erro "  export AWS_SECRET_ACCESS_KEY=..."
-  log_erro "  export AWS_SESSION_TOKEN=..."
+  erro "Credenciais AWS inválidas ou expiradas."
+  erro "AWS Academy: vá em 'AWS Details' > copie as credenciais > execute:"
+  erro ""
+  erro "  cat >> ~/.aws/credentials << 'EOF'"
+  erro "  [default]"
+  erro "  aws_access_key_id=ASIA..."
+  erro "  aws_secret_access_key=..."
+  erro "  aws_session_token=..."
+  erro "  EOF"
+  erro ""
+  erro "Ou exporte como variáveis de ambiente:"
+  erro "  export AWS_ACCESS_KEY_ID=..."
+  erro "  export AWS_SECRET_ACCESS_KEY=..."
+  erro "  export AWS_SESSION_TOKEN=..."
   exit 1
 fi
 
 CONTA_ID=$(aws sts get-caller-identity --query Account --output text)
-log_sucesso "AWS autenticado — Conta: $CONTA_ID"
+ok "AWS autenticado — Conta: $CONTA_ID"
 
 # ============================================================
 # 2. Par de Chaves SSH
 # ============================================================
+sep
 CHAVE_PRIV="$TF_DIR/lead-gen-key"
 CHAVE_PUB="$TF_DIR/lead-gen-key.pub"
 
 if [[ ! -f "$CHAVE_PRIV" ]]; then
-  log_info "Gerando par de chaves SSH..."
-  ssh-keygen -t ed25519 -f "$CHAVE_PRIV" -C "lead-gen-motor-$(date +%Y%m%d)" -N ""
+  info "Gerando par de chaves SSH RSA..."
+  ssh-keygen -t rsa -b 2048 -f "$CHAVE_PRIV" -C "lead-gen-motor-$(date +%Y%m%d)" -N ""
   chmod 600 "$CHAVE_PRIV"
-  log_sucesso "Par de chaves gerado: $CHAVE_PRIV"
+  ok "Par de chaves gerado: $CHAVE_PRIV"
 else
-  log_info "Par de chaves SSH já existe: $CHAVE_PRIV"
+  # Garante que pub key existe (pode ter sido gerada externamente)
+  if [[ ! -f "$CHAVE_PUB" ]]; then
+    ssh-keygen -y -f "$CHAVE_PRIV" > "$CHAVE_PUB"
+    info "Chave pública extraída da privada existente"
+  fi
+  ok "Par de chaves SSH: $CHAVE_PRIV"
+fi
+chmod 600 "$CHAVE_PRIV"
+
+# ============================================================
+# 3. Remove key pair AWS antigo se existir (evita conflito)
+# ============================================================
+sep
+KEY_NAME=$(grep 'chave_ssh_nome' "$TF_DIR/terraform.tfvars" 2>/dev/null | grep -oP '"\K[^"]+' || echo "lead-gen-key")
+info "Verificando key pair '$KEY_NAME' na AWS..."
+
+if aws ec2 describe-key-pairs --key-names "$KEY_NAME" --region us-east-1 &>/dev/null; then
+  warn "Key pair '$KEY_NAME' já existe na AWS. Removendo para atualizar com a chave atual..."
+  aws ec2 delete-key-pair --key-name "$KEY_NAME" --region us-east-1
+  ok "Key pair antigo removido"
+  # Também remove do Terraform state para evitar conflito de import
+  cd "$TF_DIR"
+  terraform state rm aws_key_pair.lead_gen 2>/dev/null || true
+else
+  ok "Nenhum key pair conflitante encontrado"
 fi
 
 # ============================================================
-# 3. Terraform
+# 4. Terraform
 # ============================================================
-log_info "Inicializando Terraform..."
+sep
+info "Inicializando Terraform..."
 cd "$TF_DIR"
 
-terraform init -upgrade
+terraform init -upgrade -reconfigure 2>&1 | tail -5
 
-log_info "Validando configuração Terraform..."
+info "Validando configuração..."
 terraform validate
 
-log_info "Gerando plano de execução..."
+info "Gerando plano..."
 terraform plan -out=tfplan
 
 if [[ -z "$AUTO_APPROVE" ]]; then
   echo ""
-  echo -e "${AMARELO}Revise o plano acima. Continuar com o apply? (s/N)${RESET}"
+  echo -e "${AMARELO}Continuar com o apply? [s/N]${RESET}"
   read -r CONFIRMA
   if [[ "$CONFIRMA" != "s" && "$CONFIRMA" != "S" ]]; then
-    log_aviso "Deploy cancelado pelo usuário."
+    warn "Deploy cancelado."
     exit 0
   fi
 fi
 
-log_info "Aplicando infraestrutura..."
+info "Aplicando infraestrutura..."
 terraform apply $AUTO_APPROVE tfplan
 
-# Captura outputs
 IP_PUBLICO=$(terraform output -raw instancia_ip_publico 2>/dev/null || echo "")
-INSTANCIA_ID=$(terraform output -raw instancia_id 2>/dev/null || echo "")
-
 if [[ -z "$IP_PUBLICO" ]]; then
-  log_erro "Não foi possível obter o IP público da instância."
+  erro "Não foi possível obter o IP público da instância."
+  terraform output
   exit 1
 fi
 
-log_sucesso "Infraestrutura provisionada!"
-log_sucesso "  Instância: $INSTANCIA_ID"
-log_sucesso "  IP Público: $IP_PUBLICO"
+ok "Infraestrutura provisionada! IP: $IP_PUBLICO"
+echo "$IP_PUBLICO" > "$RAIZ/.ultimo-ip"
 
 # ============================================================
-# 4. Aguarda instância ficar acessível via SSH
+# 5. Aguarda instância ficar acessível via SSH
 # ============================================================
-log_info "Aguardando instância inicializar (pode levar 2-3 minutos)..."
+sep
+info "Aguardando SSH ficar disponível (pode levar 2-3 min)..."
 
-MAX_TENTATIVAS=30
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=8 -o BatchMode=yes -i $CHAVE_PRIV"
 TENTATIVA=0
-while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-      -i "$CHAVE_PRIV" "ec2-user@$IP_PUBLICO" "echo 'SSH OK'" &>/dev/null; do
+until ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "echo SSH_OK" 2>/dev/null | grep -q "SSH_OK"; do
   TENTATIVA=$((TENTATIVA + 1))
-  if [[ $TENTATIVA -ge $MAX_TENTATIVAS ]]; then
-    log_erro "Timeout aguardando SSH. Verifique o Security Group e o status da instância."
+  if [[ $TENTATIVA -ge 40 ]]; then
+    erro "Timeout aguardando SSH. Verifique Security Group e status da instância."
+    exit 1
+  fi
+  echo -n "."
+  sleep 8
+done
+echo ""
+ok "SSH disponível!"
+
+# ============================================================
+# 6. Aguarda Docker (instalado pelo userdata)
+# ============================================================
+sep
+info "Aguardando Docker ser instalado pelo userdata (~2 min)..."
+TENTATIVA=0
+until ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "docker info &>/dev/null && echo DOCKER_OK" 2>/dev/null | grep -q "DOCKER_OK"; do
+  TENTATIVA=$((TENTATIVA + 1))
+  if [[ $TENTATIVA -ge 20 ]]; then
+    erro "Timeout aguardando Docker. Log do userdata:"
+    ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "tail -30 /var/log/userdata-lead-gen.log" 2>/dev/null || true
     exit 1
   fi
   echo -n "."
   sleep 10
 done
 echo ""
-log_sucesso "Instância acessível via SSH!"
+ok "Docker pronto!"
 
 # ============================================================
-# 5. Aguarda Docker ficar pronto (userdata script)
+# 7. Prepara estrutura de diretórios na EC2
 # ============================================================
-log_info "Aguardando Docker ser instalado pelo userdata..."
-TENTATIVA=0
-while ! ssh -o StrictHostKeyChecking=no -i "$CHAVE_PRIV" "ec2-user@$IP_PUBLICO" \
-      "docker info &>/dev/null && echo 'DOCKER_OK'" 2>/dev/null | grep -q "DOCKER_OK"; do
-  TENTATIVA=$((TENTATIVA + 1))
-  if [[ $TENTATIVA -ge 18 ]]; then
-    log_erro "Timeout aguardando Docker. Verifique o log: /var/log/userdata-lead-gen.log"
-    exit 1
-  fi
-  echo -n "."
-  sleep 10
-done
-echo ""
-log_sucesso "Docker pronto!"
-
-# ============================================================
-# 6. Cria diretórios e copia arquivos para EC2
-# ============================================================
-log_info "Copiando arquivos da aplicação para EC2..."
-
-SSH_OPTS="-o StrictHostKeyChecking=no -i $CHAVE_PRIV"
+sep
+info "Preparando diretórios na EC2..."
 
 ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "
-  mkdir -p /opt/lead-gen-motor/data/postgres
-  mkdir -p /var/log/lead-gen
+  sudo mkdir -p /opt/lead-gen-motor/app
+  sudo mkdir -p /opt/lead-gen-motor/migrations
+  sudo mkdir -p /var/log/lead-gen
+  sudo chown -R ec2-user:ec2-user /opt/lead-gen-motor /var/log/lead-gen
+  chmod 755 /opt/lead-gen-motor/app
 "
+ok "Diretórios criados"
 
-# Copia docker-compose e config
-scp $SSH_OPTS "$APP_DIR/docker-compose.yml"     "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/"
-scp $SSH_OPTS -r "$APP_DIR/config"              "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/"
-scp $SSH_OPTS -r "$RAIZ/migrations"             "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/"
+# ============================================================
+# 8. Copia código fonte + configs para EC2
+# ============================================================
+sep
+info "Copiando aplicação para EC2 (pode levar ~30s)..."
 
-# Copia .env se existir
-if [[ -f "$APP_DIR/.env" ]]; then
-  scp $SSH_OPTS "$APP_DIR/.env" "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/.env"
-  log_sucesso "Arquivo .env copiado"
+# Usa rsync se disponível, senão scp
+if command -v rsync &>/dev/null; then
+  rsync -az --progress \
+    --exclude='.git' \
+    --exclude='*.test' \
+    --exclude='vendor/' \
+    -e "ssh $SSH_OPTS" \
+    "$APP_DIR/" \
+    "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/app/"
 else
-  log_aviso ".env não encontrado em $APP_DIR/.env — editando template na instância"
+  # Fallback: scp recursivo
+  scp $SSH_OPTS -r "$APP_DIR/." "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/app/"
 fi
 
-# ============================================================
-# 7. Build e Start da Aplicação
-# ============================================================
-log_info "Construindo imagem Docker na instância (pode demorar ~3 minutos)..."
+# Copia migrations (um nível acima de app/ para manter ../migrations funcional)
+scp $SSH_OPTS -r "$RAIZ/migrations/." "ec2-user@$IP_PUBLICO:/opt/lead-gen-motor/migrations/"
 
-ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" << 'REMOTE_SCRIPT'
+ok "Código fonte copiado"
+
+# ============================================================
+# 9. Configura .env na EC2 (sem credenciais AWS — usa LabInstanceProfile)
+# ============================================================
+sep
+info "Configurando .env na EC2..."
+
+ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "
+  chmod 600 /opt/lead-gen-motor/app/.env 2>/dev/null || true
+
+  # Remove variáveis AWS temporárias do .env (a instância usa LabInstanceProfile)
+  if [[ -f /opt/lead-gen-motor/app/.env ]]; then
+    sed -i '/^AWS_ACCESS_KEY_ID=/d'    /opt/lead-gen-motor/app/.env
+    sed -i '/^AWS_SECRET_ACCESS_KEY=/d' /opt/lead-gen-motor/app/.env
+    sed -i '/^AWS_SESSION_TOKEN=/d'    /opt/lead-gen-motor/app/.env
+    echo 'AWS_REGION=us-east-1' >> /opt/lead-gen-motor/app/.env
+    chmod 600 /opt/lead-gen-motor/app/.env
+    echo '.env configurado'
+  fi
+"
+
+# ============================================================
+# 10. Build + Start da Aplicação
+# ============================================================
+sep
+info "Gerando go.sum e construindo imagem Docker na EC2..."
+info "(primeiro build demora ~5 min — baixando go modules e images)"
+
+COMPOSE_CMD="sudo docker compose"
+
+ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "
   set -euo pipefail
-  cd /opt/lead-gen-motor
+  cd /opt/lead-gen-motor/app
 
-  # Copia código fonte se não estiver lá ainda
-  # Em produção real: usar docker pull de ECR ou GitHub Actions
-  echo "Iniciando build e deploy..."
+  # Para containers existentes
+  ${COMPOSE_CMD} down --timeout 10 2>/dev/null || true
 
-  docker-compose pull chromedp postgres 2>/dev/null || true
-  docker-compose up -d --build
+  # Gera go.sum se não existir (pode ter sido ignorado no scp)
+  if [[ ! -f go.sum ]]; then
+    echo 'Gerando go.sum via container Go...'
+    sudo docker run --rm \\
+      -v \$(pwd):/app \\
+      -w /app \\
+      -e GOMODCACHE=/tmp/gomodcache \\
+      -e GOPATH=/tmp/gopath \\
+      golang:1.22-alpine \\
+      sh -c 'apk add --no-cache git >/dev/null 2>&1 && go mod tidy 2>&1'
+  fi
 
-  # Aguarda health check
-  echo "Aguardando aplicação inicializar..."
-  TENTATIVA=0
-  while ! curl -sf http://localhost:8080/api/v1/health > /dev/null 2>&1; do
-    TENTATIVA=$((TENTATIVA + 1))
-    if [[ $TENTATIVA -ge 12 ]]; then
-      echo "AVISO: Aplicação não respondeu ao health check. Verifique os logs."
-      docker-compose logs --tail=50 app
-      break
-    fi
-    sleep 5
-    echo -n "."
-  done
-  echo ""
-  echo "Deploy concluído!"
-REMOTE_SCRIPT
+  # Pull das imagens de infraestrutura
+  echo 'Baixando imagens postgres e chromedp...'
+  ${COMPOSE_CMD} pull postgres chromedp 2>/dev/null || true
 
-log_sucesso "=============================================="
-log_sucesso " DEPLOY CONCLUÍDO COM SUCESSO!"
-log_sucesso "=============================================="
+  # Build + Start
+  echo 'Buildando e iniciando containers...'
+  ${COMPOSE_CMD} up -d $REBUILD --remove-orphans
+"
+
+# ============================================================
+# 11. Aguarda aplicação responder
+# ============================================================
+sep
+info "Aguardando aplicação ficar pronta..."
+TENTATIVA=0
+until curl -sf "http://$IP_PUBLICO:8080/api/v1/health" &>/dev/null; do
+  TENTATIVA=$((TENTATIVA + 1))
+  if [[ $TENTATIVA -ge 20 ]]; then
+    warn "Aplicação ainda não respondeu. Mostrando logs:"
+    ssh $SSH_OPTS "ec2-user@$IP_PUBLICO" "cd /opt/lead-gen-motor/app && sudo docker compose logs --tail=40 app" || true
+    break
+  fi
+  echo -n "."
+  sleep 10
+done
 echo ""
-echo -e "  ${AZUL}API:${RESET}    http://$IP_PUBLICO:8080/api/v1"
-echo -e "  ${AZUL}Health:${RESET} http://$IP_PUBLICO:8080/api/v1/health"
-echo -e "  ${AZUL}SSH:${RESET}    ssh -i $CHAVE_PRIV ec2-user@$IP_PUBLICO"
-echo -e "  ${AZUL}Logs:${RESET}   ssh -i $CHAVE_PRIV ec2-user@$IP_PUBLICO 'cd /opt/lead-gen-motor && docker-compose logs -f app'"
+
+# ============================================================
+# Status Final
+# ============================================================
+sep
+echo ""
+echo -e "${VERDE}============================================================${RESET}"
+echo -e "${VERDE}   DEPLOY CONCLUÍDO!${RESET}"
+echo -e "${VERDE}============================================================${RESET}"
+echo ""
+echo -e "  ${AZUL}IP:${RESET}      $IP_PUBLICO"
+echo -e "  ${AZUL}API:${RESET}     http://$IP_PUBLICO:8080/api/v1"
+echo -e "  ${AZUL}Health:${RESET}  http://$IP_PUBLICO:8080/api/v1/health"
+echo -e "  ${AZUL}SSH:${RESET}     ssh -i $CHAVE_PRIV ec2-user@$IP_PUBLICO"
+echo ""
+echo -e "  ${AMARELO}Logs:${RESET}    ssh -i $CHAVE_PRIV ec2-user@$IP_PUBLICO"
+echo -e "           'cd /opt/lead-gen-motor/app && sudo docker compose logs -f app'"
 echo ""
 
-# Salva IP para uso posterior
-echo "$IP_PUBLICO" > "$RAIZ/.ultimo-ip"
-log_info "IP salvo em: $RAIZ/.ultimo-ip"
+HEALTH=$(curl -sf "http://$IP_PUBLICO:8080/api/v1/health" 2>/dev/null || echo '{"status":"iniciando..."}')
+echo -e "  Health: ${VERDE}$HEALTH${RESET}"
+echo ""

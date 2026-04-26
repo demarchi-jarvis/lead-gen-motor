@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,6 +27,19 @@ import (
 )
 
 func main() {
+	// Modo health check: faz GET no /health e sai com 0 (ok) ou 1 (falha).
+	// Usado pelo HEALTHCHECK do Docker sem precisar de curl/wget na imagem scratch.
+	modoHealthCheck := flag.Bool("healthcheck", false, "executa health check e sai")
+	flag.Parse()
+
+	if *modoHealthCheck {
+		resp, err := http.Get("http://localhost:8080/api/v1/health")
+		if err != nil || resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	// ============================================================
 	// Logger estruturado (JSON em prod, texto em dev)
 	// ============================================================
@@ -563,6 +577,16 @@ func (h *handler) despacharCampanha(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		responderErro(w, http.StatusBadRequest, "JSON inválido")
+		return
+	}
+
+	campanha, err := h.campanhaRepo.BuscarPorID(r.Context(), id)
+	if err != nil {
+		responderErro(w, http.StatusNotFound, "campanha não encontrada")
+		return
+	}
+	if !campanha.EstaAtiva() {
+		responderErro(w, http.StatusConflict, "campanha deve estar ativa para despachar jobs (status atual: "+string(campanha.Status)+")")
 		return
 	}
 

@@ -1,16 +1,16 @@
 output "instancia_ip_publico" {
   description = "IP público da instância EC2 Spot"
-  value       = aws_spot_instance_request.lead_gen.public_ip
+  value       = aws_instance.lead_gen.public_ip
 }
 
 output "instancia_id" {
   description = "ID da instância EC2 criada pelo Spot request"
-  value       = aws_spot_instance_request.lead_gen.spot_instance_id
+  value       = aws_instance.lead_gen.id
 }
 
 output "spot_request_id" {
   description = "ID do Spot Instance Request (para gerenciar o request)"
-  value       = aws_spot_instance_request.lead_gen.id
+  value       = aws_instance.lead_gen.id
 }
 
 output "vpc_id" {
@@ -28,10 +28,10 @@ output "security_group_id" {
   value       = aws_security_group.lead_gen.id
 }
 
-output "iam_role_arn" {
-  description = "ARN da IAM Role EC2"
-  value       = aws_iam_role.ec2_lead_gen.arn
-}
+#output "iam_role_arn" {
+#  description = "ARN da IAM Role EC2"
+#  value       = aws_iam_role.ec2_lead_gen.arn
+#}
 
 output "cloudwatch_log_group" {
   description = "Nome do Log Group da aplicação"
@@ -40,17 +40,17 @@ output "cloudwatch_log_group" {
 
 output "comando_ssh" {
   description = "Comando SSH para acessar a instância"
-  value       = "ssh -i lead-gen-key ec2-user@${aws_spot_instance_request.lead_gen.public_ip}"
+  value       = "ssh -i lead-gen-key ec2-user@${aws_instance.lead_gen.public_ip}"
 }
 
 output "url_api" {
   description = "URL base da API REST"
-  value       = "http://${aws_spot_instance_request.lead_gen.public_ip}:8080/api/v1"
+  value       = "http://${aws_instance.lead_gen.public_ip}:8080/api/v1"
 }
 
 output "url_health" {
   description = "Endpoint de health check"
-  value       = "http://${aws_spot_instance_request.lead_gen.public_ip}:8080/api/v1/health"
+  value       = "http://${aws_instance.lead_gen.public_ip}:8080/api/v1/health"
 }
 
 output "custo_estimado_mensal" {

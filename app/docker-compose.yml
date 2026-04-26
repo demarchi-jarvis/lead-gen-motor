@@ -18,10 +18,6 @@ networks:
 volumes:
   postgres_data:
     driver: local
-    driver_opts:
-      type: none
-      device: /opt/lead-gen-motor/data/postgres
-      o: bind
   postgres_backups:
     driver: local
 
@@ -134,9 +130,8 @@ services:
       TZ:         America/Sao_Paulo
     volumes:
       - ./config/limits.yaml:/app/config/limits.yaml:ro
-      - /var/log/lead-gen:/var/log/lead-gen
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/api/v1/health || exit 1"]
+      test: ["CMD", "/lead-gen-motor", "-healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3

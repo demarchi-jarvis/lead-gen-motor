@@ -228,12 +228,12 @@ VALUES (
     'Oportunidade de parceria — {{empresa}}',
     'Olá {{nome}},
 
-Encontrei o perfil da {{empresa}} e acredito que temos uma sinergia interessante.
+Encontrei o perfil da {{empresa}} e acredito que temos uma sinergia interessante na área de tecnologia e consultoria.
 
-Trabalho com soluções de {{area}} que ajudaram empresas similares a {{beneficio}}.
+Trabalho com soluções que ajudaram empresas do segmento a reduzir custos operacionais e escalar com mais eficiência.
 
-Posso mostrar em 15 minutos como isso funcionaria para vocês?
+Seria possível conversar 15 minutos esta semana para eu mostrar como isso funcionaria para a {{empresa}}?
 
-Abraços,
-{{remetente}}'
+Att,
+Demarchi MEI — demarchivagas@gmail.com'
 );

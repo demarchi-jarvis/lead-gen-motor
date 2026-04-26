@@ -15,9 +15,8 @@ RUN apk add --no-cache gcc musl-dev git ca-certificates tzdata
 
 WORKDIR /build
 
-# Copia go.mod e go.sum primeiro (cache de dependências)
 COPY go.mod go.sum ./
-RUN go mod download && go mod verify
+RUN go mod download
 
 # Copia o código fonte
 COPY . .
@@ -59,9 +58,9 @@ COPY config/limits.yaml /app/config/limits.yaml
 # Porta da aplicação
 EXPOSE 8080
 
-# Health check interno
+# Health check via o próprio binário (imagem scratch não tem wget/curl)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD ["/lead-gen-motor", "-healthcheck"] || exit 1
+    CMD ["/lead-gen-motor", "-healthcheck"]
 
 # Usuário não-root (UID 1000 — best practice de segurança)
 # Nota: em scratch não podemos usar USER por nome, apenas UID
